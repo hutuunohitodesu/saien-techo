@@ -27,15 +27,23 @@ const VEGGIES = [
   { id: "tomato", name: "トマト", icon: "🍅", category: "fruit_large", frostTender: true,
     plantLabel: "植え付け", winStart: "05-05", winEnd: "05-20",
     harvestMin: 65, harvestMax: 85,
+    taskConfig: { "追肥": { repeatDays: 21 } },
     memo: "遅霜が過ぎてから植え付け。梅雨の長雨で実が割れやすいので雨よけがあると安心。" },
   { id: "minitomato", name: "ミニトマト", icon: "🍅", category: "fruit_large", frostTender: true,
     plantLabel: "植え付け", winStart: "05-05", winEnd: "05-20",
     harvestMin: 55, harvestMax: 75,
+    taskConfig: { "追肥": { repeatDays: 21 } },
     memo: "大玉より育てやすく実つきも多い。裂果しにくいが、水やりの量が急に変わると割れやすいので注意。" },
   { id: "nasu", name: "ナス", icon: "🍆", category: "fruit_large", frostTender: true,
     plantLabel: "植え付け", winStart: "05-10", winEnd: "05-25",
     harvestMin: 55, harvestMax: 75,
+    taskConfig: { "追肥": { repeatDays: 14 } },
     memo: "低温に弱いので地温が十分上がってから。マルチで地温確保すると生育が安定。" },
+  { id: "okra", name: "オクラ", icon: "🌶️", category: "fruit_large", frostTender: true,
+    plantLabel: "植え付け", winStart: "05-20", winEnd: "06-10",
+    harvestMin: 55, harvestMax: 75,
+    taskConfig: { "追肥": { repeatDays: 14 } },
+    memo: "生育が早く、実が大きくなりすぎると硬くなるので5〜8cmくらいでこまめに収穫。" },
   { id: "piman", name: "ピーマン", icon: "🫑", category: "fruit_large", frostTender: true,
     plantLabel: "植え付け", winStart: "05-10", winEnd: "05-25",
     harvestMin: 60, harvestMax: 80,
@@ -43,6 +51,7 @@ const VEGGIES = [
   { id: "kyuri", name: "キュウリ", icon: "🥒", category: "fruit_vine", frostTender: true,
     plantLabel: "植え付け", winStart: "05-05", winEnd: "05-20",
     harvestMin: 40, harvestMax: 55,
+    taskConfig: { "追肥": { repeatDays: 10 } },
     memo: "生育が早いので収穫適期を逃さないよう毎日チェック。" },
   { id: "kabocha", name: "カボチャ", icon: "🎃", category: "fruit_vine", frostTender: true,
     plantLabel: "植え付け", winStart: "05-15", winEnd: "05-31",
@@ -222,16 +231,26 @@ function vegOf(vegId) {
   return VEGGIES.find((v) => v.id === vegId) || null;
 }
 
+/* テンプレートに野菜ごと(taskConfig)・株ごと(taskOverrides)の上書きをマージ */
+function mergedTaskTemplates(plant, veg) {
+  const base = CATEGORY_TASKS[veg.category] || [];
+  return base.map((tpl) => {
+    const vegOverride = (veg.taskConfig && veg.taskConfig[tpl.name]) || {};
+    const plantOverride = (plant.taskOverrides && plant.taskOverrides[tpl.name]) || {};
+    return { ...tpl, ...vegOverride, ...plantOverride };
+  });
+}
+
 /* タスク発生日リストを生成 */
 function generateTasks(plant) {
   const veg = vegOf(plant.vegId);
   if (!veg) return [];
-  const templates = CATEGORY_TASKS[veg.category] || [];
+  const templates = mergedTaskTemplates(plant, veg);
   const tasks = [];
   templates.forEach((tpl, tIdx) => {
     let occOffset = tpl.offset;
     let occIdx = 0;
-    const maxOcc = tpl.maxOcc || 8;
+    const maxOcc = tpl.maxOcc || 12;
     const until = veg.harvestMax;
     while (occOffset <= until && occIdx < maxOcc) {
       tasks.push({
@@ -253,6 +272,28 @@ function generateTasks(plant) {
   return tasks.sort((a, b) => a.dueDate - b.dueDate);
 }
 
+/* カスタム予定（農薬散布・株分けなど、日付を指定して自由に追加できる予定）を日付展開 */
+function expandCustomTask(ct) {
+  const out = [];
+  let cur = ct.date;
+  let idx = 0;
+  const maxCount = ct.repeatCount && ct.repeatCount > 0 ? ct.repeatCount : ct.repeatDays ? 12 : 1;
+  while (idx < maxCount) {
+    out.push({
+      id: `custom__${ct.id}__${idx}`,
+      customId: ct.id,
+      name: ct.name,
+      note: ct.note || "",
+      dueDate: parseISO(cur),
+      isCustom: true,
+    });
+    idx++;
+    if (!ct.repeatDays) break;
+    cur = toISO(addDays(cur, ct.repeatDays));
+  }
+  return out;
+}
+
 /* ---------- storage（Googleスプレッドシート / Apps Script Web App 経由） ---------- */
 const GAS_URL = "https://script.google.com/macros/s/AKfycbz9EfBpgFqpMXav4T15RJTGp9N7D4wWKNNCymzjwqn22p78lZnB4CqhED-X5lNLCvip/exec";
 const SECRET = "hutuunohitodesu";
@@ -262,16 +303,19 @@ async function loadData() {
     const res = await fetch(`${GAS_URL}?key=${encodeURIComponent(SECRET)}`);
     const text = await res.text();
     const parsed = JSON.parse(text);
-    if (parsed && parsed.plants) return parsed;
+    return {
+      plants: parsed.plants || [],
+      customTasks: parsed.customTasks || [],
+      generalCompletions: parsed.generalCompletions || {},
+    };
   } catch (e) {
     console.error("読み込みに失敗しました", e);
   }
-  return { plants: [] };
+  return { plants: [], customTasks: [], generalCompletions: {} };
 }
 
 async function saveData(data) {
   try {
-    // Content-Type を指定しない（text/plain扱い）ことで、Apps Script側でのCORSプリフライト問題を回避
     await fetch(GAS_URL, {
       method: "POST",
       body: JSON.stringify({ key: SECRET, data }),
@@ -291,6 +335,7 @@ function App() {
   const [showAddPlant, setShowAddPlant] = useState(false);
   const [prefillVeg, setPrefillVeg] = useState(null);
   const [showJournalFor, setShowJournalFor] = useState(null);
+  const [showAddSchedule, setShowAddSchedule] = useState(null);
   const [saveError, setSaveError] = useState(false);
 
   useEffect(() => {
@@ -307,8 +352,9 @@ function App() {
 
   const plants = (data && data.plants) || [];
   const activePlants = plants.filter((p) => !p.archived);
+  const customTasks = (data && data.customTasks) || [];
 
-  /* 全植物の未来タスクを集計（データ未読込時は空配列） */
+  /* 全植物の未来タスク＋カスタム予定を集計（データ未読込時は空配列） */
   const allTasks = useMemo(() => {
     if (!data) return [];
     const out = [];
@@ -319,7 +365,14 @@ function App() {
         out.push({ ...t, plant: p, veg });
       });
     });
-    return out;
+    customTasks.forEach((ct) => {
+      const plant = ct.plantId ? activePlants.find((p) => p.id === ct.plantId) : null;
+      const veg = plant ? vegOf(plant.vegId) : null;
+      expandCustomTask(ct).forEach((t) => {
+        out.push({ ...t, plant: plant || null, veg: veg || null });
+      });
+    });
+    return out.sort((a, b) => a.dueDate - b.dueDate);
   }, [data]);
 
   if (!data) {
@@ -335,6 +388,8 @@ function App() {
   today.setHours(0, 0, 0, 0);
 
   const isDone = (plant, taskId) => !!(plant.taskCompletions && plant.taskCompletions[taskId]);
+  const isGeneralDone = (taskId) => !!((data.generalCompletions || {})[taskId]);
+  const isTaskDone = (t) => (t.plant ? isDone(t.plant, t.id) : isGeneralDone(t.id));
 
   const toggleTask = (plantId, taskId) => {
     persist((prev) => ({
@@ -348,12 +403,21 @@ function App() {
       }),
     }));
   };
+  const toggleGeneralTask = (taskId) => {
+    persist((prev) => {
+      const gc = { ...(prev.generalCompletions || {}) };
+      if (gc[taskId]) delete gc[taskId];
+      else gc[taskId] = toISO(new Date());
+      return { ...prev, generalCompletions: gc };
+    });
+  };
+  const toggleAnyTask = (t) => (t.plant ? toggleTask(t.plant.id, t.id) : toggleGeneralTask(t.id));
 
-  const overdue = allTasks.filter((t) => t.dueDate < today && !isDone(t.plant, t.id));
-  const dueToday = allTasks.filter((t) => daysDiff(new Date(t.dueDate), today) === 0 && !isDone(t.plant, t.id));
+  const overdue = allTasks.filter((t) => t.dueDate < today && !isTaskDone(t));
+  const dueToday = allTasks.filter((t) => daysDiff(new Date(t.dueDate), today) === 0 && !isTaskDone(t));
   const dueSoon = allTasks.filter((t) => {
     const diff = daysDiff(new Date(t.dueDate), today);
-    return diff > 0 && diff <= 7 && !isDone(t.plant, t.id);
+    return diff > 0 && diff <= 7 && !isTaskDone(t);
   });
 
   const addPlant = (plant) => {
@@ -373,9 +437,23 @@ function App() {
       ),
     }));
   };
+  const addCustomTask = (entry) => {
+    persist((prev) => ({ ...prev, customTasks: [...(prev.customTasks || []), entry] }));
+  };
+  const deleteCustomTask = (customId) => {
+    persist((prev) => ({
+      ...prev,
+      customTasks: (prev.customTasks || []).filter((ct) => ct.id !== customId),
+    }));
+  };
 
   const selectedPlant = activePlants.find((p) => p.id === selectedPlantId);
   const monthTip = MONTH_TIPS[today.getMonth() + 1];
+
+  const plantCustomTasks = (plantId) =>
+    customTasks.filter((ct) => ct.plantId === plantId).flatMap((ct) =>
+      expandCustomTask(ct).map((t) => ({ ...t, plant: selectedPlant, veg: vegOf(selectedPlant.vegId) }))
+    );
 
   return (
     <div className="saien-app">
@@ -398,7 +476,8 @@ function App() {
             overdue={overdue}
             dueToday={dueToday}
             dueSoon={dueSoon}
-            toggleTask={toggleTask}
+            isTaskDone={isTaskDone}
+            toggleAnyTask={toggleAnyTask}
             onSelectPlant={(id) => { setSelectedPlantId(id); setTab("plants"); }}
           />
         )}
@@ -415,18 +494,30 @@ function App() {
           <PlantDetailView
             plant={selectedPlant}
             veg={vegOf(selectedPlant.vegId)}
-            tasks={generateTasks(selectedPlant)}
+            tasks={[...generateTasks(selectedPlant), ...plantCustomTasks(selectedPlant.id)].sort((a, b) => a.dueDate - b.dueDate)}
             isDone={(taskId) => isDone(selectedPlant, taskId)}
             onToggle={(taskId) => toggleTask(selectedPlant.id, taskId)}
+            onDeleteCustom={deleteCustomTask}
             onBack={() => setSelectedPlantId(null)}
             onArchive={() => { archivePlant(selectedPlant.id); setSelectedPlantId(null); }}
             onAddJournal={() => setShowJournalFor(selectedPlant.id)}
+            onAddSchedule={() => setShowAddSchedule({ plantId: selectedPlant.id, date: toISO(new Date()) })}
           />
         )}
 
         {tab === "plan" && (
           <PlanView
             onPick={(veg) => { setPrefillVeg(veg); setShowAddPlant(true); }}
+          />
+        )}
+
+        {tab === "calendar" && (
+          <CalendarView
+            allTasks={allTasks}
+            isTaskDone={isTaskDone}
+            toggleAnyTask={toggleAnyTask}
+            onSelectPlant={(id) => { setSelectedPlantId(id); setTab("plants"); }}
+            onAddSchedule={(dateISO) => setShowAddSchedule({ plantId: null, date: dateISO })}
           />
         )}
 
@@ -438,7 +529,8 @@ function App() {
       <nav className="tab-bar">
         <TabButton active={tab === "today"} icon="☀️" label="今日" onClick={() => { setTab("today"); setSelectedPlantId(null); }} />
         <TabButton active={tab === "plants"} icon="🌿" label="育てる野菜" onClick={() => { setTab("plants"); setSelectedPlantId(null); }} />
-        <TabButton active={tab === "plan"} icon="📅" label="作付け計画" onClick={() => { setTab("plan"); setSelectedPlantId(null); }} />
+        <TabButton active={tab === "plan"} icon="🌾" label="作付け計画" onClick={() => { setTab("plan"); setSelectedPlantId(null); }} />
+        <TabButton active={tab === "calendar"} icon="🗓️" label="カレンダー" onClick={() => { setTab("calendar"); setSelectedPlantId(null); }} />
         <TabButton active={tab === "journal"} icon="📔" label="記録" onClick={() => { setTab("journal"); setSelectedPlantId(null); }} />
       </nav>
 
@@ -454,6 +546,16 @@ function App() {
         <JournalModal
           onClose={() => setShowJournalFor(null)}
           onSave={(entry) => { addJournal(showJournalFor, entry); setShowJournalFor(null); }}
+        />
+      )}
+
+      {showAddSchedule && (
+        <AddScheduleModal
+          plants={activePlants}
+          initialPlantId={showAddSchedule.plantId}
+          initialDate={showAddSchedule.date}
+          onClose={() => setShowAddSchedule(null)}
+          onSave={(entry) => { addCustomTask(entry); setShowAddSchedule(null); }}
         />
       )}
 
@@ -493,7 +595,7 @@ function GrowthBar({ plant, veg }) {
 }
 
 /* ---------- 今日タブ ---------- */
-function TodayView({ monthTip, overdue, dueToday, dueSoon, toggleTask, onSelectPlant }) {
+function TodayView({ monthTip, overdue, dueToday, dueSoon, isTaskDone, toggleAnyTask, onSelectPlant }) {
   return (
     <div className="view">
       <div className="tip-card">
@@ -509,33 +611,33 @@ function TodayView({ monthTip, overdue, dueToday, dueSoon, toggleTask, onSelectP
       )}
 
       {overdue.length > 0 && (
-        <TaskSection title="遅れているタスク" tone="overdue" tasks={overdue} toggleTask={toggleTask} onSelectPlant={onSelectPlant} />
+        <TaskSection title="遅れているタスク" tone="overdue" tasks={overdue} isTaskDone={isTaskDone} toggleAnyTask={toggleAnyTask} onSelectPlant={onSelectPlant} />
       )}
       {dueToday.length > 0 && (
-        <TaskSection title="今日やること" tone="today" tasks={dueToday} toggleTask={toggleTask} onSelectPlant={onSelectPlant} />
+        <TaskSection title="今日やること" tone="today" tasks={dueToday} isTaskDone={isTaskDone} toggleAnyTask={toggleAnyTask} onSelectPlant={onSelectPlant} />
       )}
       {dueSoon.length > 0 && (
-        <TaskSection title="今週中に（7日以内）" tone="soon" tasks={dueSoon} toggleTask={toggleTask} onSelectPlant={onSelectPlant} />
+        <TaskSection title="今週中に（7日以内）" tone="soon" tasks={dueSoon} isTaskDone={isTaskDone} toggleAnyTask={toggleAnyTask} onSelectPlant={onSelectPlant} />
       )}
     </div>
   );
 }
 
-function TaskSection({ title, tone, tasks, toggleTask, onSelectPlant }) {
+function TaskSection({ title, tone, tasks, isTaskDone, toggleAnyTask, onSelectPlant }) {
   return (
     <section className="task-section">
-      <h2 className={`section-title tone-${tone}`}>{title}</h2>
+      {title && <h2 className={`section-title tone-${tone}`}>{title}</h2>}
       <ul className="task-list">
         {tasks.map((t) => (
-          <li key={t.plant.id + t.id} className={`task-item tone-${tone}`}>
-            <button className="task-check" onClick={() => toggleTask(t.plant.id, t.id)} aria-label="完了にする">
-              ○
+          <li key={(t.plant ? t.plant.id : "general") + t.id} className={`task-item tone-${tone} ${isTaskDone && isTaskDone(t) ? "task-done" : ""}`}>
+            <button className="task-check" onClick={() => toggleAnyTask(t)} aria-label="完了にする">
+              {isTaskDone && isTaskDone(t) ? "●" : "○"}
             </button>
-            <div className="task-body" onClick={() => onSelectPlant(t.plant.id)}>
+            <div className="task-body" onClick={() => t.plant && onSelectPlant(t.plant.id)}>
               <div className="task-line1">
-                <span className="task-veg-icon">{t.veg.icon}</span>
-                <span className="task-veg-name">{t.plant.customName || t.veg.name}</span>
-                {t.plant.plotLabel && <span className="task-plot">（{t.plant.plotLabel}）</span>}
+                <span className="task-veg-icon">{t.veg ? t.veg.icon : "🧑‍🌾"}</span>
+                <span className="task-veg-name">{t.plant ? (t.plant.customName || (t.veg && t.veg.name)) : "畑全体"}</span>
+                {t.plant && t.plant.plotLabel && <span className="task-plot">（{t.plant.plotLabel}）</span>}
               </div>
               <div className="task-line2">
                 <span className="task-name">{t.name}</span>
@@ -543,6 +645,7 @@ function TaskSection({ title, tone, tasks, toggleTask, onSelectPlant }) {
                   {t.dueDateEnd ? `${fmtMD(t.dueDate)}〜${fmtMD(t.dueDateEnd)}` : fmtMDW(t.dueDate)}
                 </span>
               </div>
+              {t.note && <div className="task-note">{t.note}</div>}
             </div>
           </li>
         ))}
@@ -590,7 +693,7 @@ function PlantsListView({ plants, onSelect, onAdd }) {
 }
 
 /* ---------- 個別詳細 ---------- */
-function PlantDetailView({ plant, veg, tasks, isDone, onToggle, onBack, onArchive, onAddJournal }) {
+function PlantDetailView({ plant, veg, tasks, isDone, onToggle, onDeleteCustom, onBack, onArchive, onAddJournal, onAddSchedule }) {
   return (
     <div className="view">
       <button className="back-btn" onClick={onBack}>← 一覧に戻る</button>
@@ -613,28 +716,34 @@ function PlantDetailView({ plant, veg, tasks, isDone, onToggle, onBack, onArchiv
         </>
       )}
 
-      {veg && tasks.length > 0 && (
-        <section className="task-section">
+      <section className="task-section">
+        <div className="view-header">
           <h3 className="section-title">お世話タスク</h3>
-          <ul className="task-list">
-            {tasks.map((t) => (
-              <li key={t.id} className={`task-item ${isDone(t.id) ? "task-done" : ""}`}>
-                <button className="task-check" onClick={() => onToggle(t.id)}>
-                  {isDone(t.id) ? "●" : "○"}
-                </button>
-                <div className="task-body">
-                  <div className="task-line2">
-                    <span className="task-name">{t.name}</span>
-                    <span className="task-date">
-                      {t.dueDateEnd ? `${fmtMD(t.dueDate)}〜${fmtMD(t.dueDateEnd)}` : fmtMDW(t.dueDate)}
-                    </span>
-                  </div>
+          <button className="btn-secondary" onClick={onAddSchedule}>＋ 予定を追加</button>
+        </div>
+        {tasks.length === 0 && <p className="muted">タスクはありません。</p>}
+        <ul className="task-list">
+          {tasks.map((t) => (
+            <li key={t.id} className={`task-item ${isDone(t.id) ? "task-done" : ""}`}>
+              <button className="task-check" onClick={() => onToggle(t.id)}>
+                {isDone(t.id) ? "●" : "○"}
+              </button>
+              <div className="task-body">
+                <div className="task-line2">
+                  <span className="task-name">{t.isCustom ? "📌 " : ""}{t.name}</span>
+                  <span className="task-date">
+                    {t.dueDateEnd ? `${fmtMD(t.dueDate)}〜${fmtMD(t.dueDateEnd)}` : fmtMDW(t.dueDate)}
+                  </span>
                 </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+                {t.note && <div className="task-note">{t.note}</div>}
+              </div>
+              {t.isCustom && (
+                <button className="task-delete" onClick={() => onDeleteCustom(t.customId)} aria-label="この予定を削除">✕</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
 
       <section className="task-section">
         <div className="view-header">
@@ -719,7 +828,84 @@ function MonthBar({ winStart, winEnd }) {
   );
 }
 
-/* ---------- 記録タブ（全体タイムライン） ---------- */
+/* ---------- カレンダー ---------- */
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+
+function CalendarView({ allTasks, isTaskDone, toggleAnyTask, onSelectPlant, onAddSchedule }) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const [monthDate, setMonthDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selectedDate, setSelectedDate] = useState(toISO(today));
+
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const tasksByDate = useMemo(() => {
+    const map = {};
+    allTasks.forEach((t) => {
+      const key = toISO(t.dueDate);
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+    return map;
+  }, [allTasks]);
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const selectedTasks = (tasksByDate[selectedDate] || []).sort((a, b) => a.dueDate - b.dueDate);
+  const selDateObj = parseISO(selectedDate);
+
+  return (
+    <div className="view">
+      <div className="cal-nav">
+        <button className="cal-nav-btn" onClick={() => setMonthDate(new Date(year, month - 1, 1))}>‹</button>
+        <span className="cal-nav-label">{year}年{month + 1}月</span>
+        <button className="cal-nav-btn" onClick={() => setMonthDate(new Date(year, month + 1, 1))}>›</button>
+      </div>
+
+      <div className="cal-grid">
+        {WEEKDAY_LABELS.map((w) => (
+          <div key={w} className="cal-weekday">{w}</div>
+        ))}
+        {cells.map((d, i) => {
+          if (d === null) return <div key={`b${i}`} className="cal-cell cal-cell-empty" />;
+          const iso = `${year}-${pad2(month + 1)}-${pad2(d)}`;
+          const dayTasks = tasksByDate[iso] || [];
+          const isToday = iso === toISO(today);
+          const isSelected = iso === selectedDate;
+          const hasUndone = dayTasks.some((t) => !isTaskDone(t));
+          return (
+            <button
+              key={iso}
+              className={`cal-cell ${isToday ? "cal-cell-today" : ""} ${isSelected ? "cal-cell-selected" : ""}`}
+              onClick={() => setSelectedDate(iso)}
+            >
+              <span className="cal-daynum">{d}</span>
+              {dayTasks.length > 0 && <span className={`cal-dot ${hasUndone ? "" : "cal-dot-done"}`} />}
+            </button>
+          );
+        })}
+      </div>
+
+      <section className="task-section cal-day-panel">
+        <div className="view-header">
+          <h3 className="section-title">{fmtMDW(selDateObj)}の予定</h3>
+          <button className="btn-secondary" onClick={() => onAddSchedule(selectedDate)}>＋ この日に追加</button>
+        </div>
+        {selectedTasks.length === 0 && <p className="muted">この日の予定はありません。</p>}
+        {selectedTasks.length > 0 && (
+          <TaskSection tasks={selectedTasks} isTaskDone={isTaskDone} toggleAnyTask={toggleAnyTask} onSelectPlant={onSelectPlant} title="" tone="soon" />
+        )}
+      </section>
+    </div>
+  );
+}
+
+
 function JournalView({ plants, onSelectPlant }) {
   const entries = [];
   plants.forEach((p) => {
@@ -764,11 +950,26 @@ function AddPlantModal({ prefillVeg, onClose, onAdd }) {
   const [customName, setCustomName] = useState("");
   const [plotLabel, setPlotLabel] = useState("");
   const [plantedDate, setPlantedDate] = useState(toISO(new Date()));
+  const [intervalOverrides, setIntervalOverrides] = useState({});
+  const [showIntervalEdit, setShowIntervalEdit] = useState(false);
+
+  const selectedVeg = vegOf(vegId);
+  const recurringTemplates =
+    mode === "master" && selectedVeg
+      ? (CATEGORY_TASKS[selectedVeg.category] || []).filter((t) => t.repeatDays)
+      : [];
+
+  const intervalFor = (tpl) =>
+    intervalOverrides[tpl.name] ?? (selectedVeg.taskConfig && selectedVeg.taskConfig[tpl.name] && selectedVeg.taskConfig[tpl.name].repeatDays) ?? tpl.repeatDays;
 
   const submit = () => {
     const id = `p_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const taskOverrides = {};
+    Object.entries(intervalOverrides).forEach(([name, days]) => {
+      if (days && Number(days) > 0) taskOverrides[name] = { repeatDays: Number(days) };
+    });
     if (mode === "master") {
-      onAdd({ id, vegId, plotLabel, plantedDate, taskCompletions: {}, journal: [] });
+      onAdd({ id, vegId, plotLabel, plantedDate, taskCompletions: {}, journal: [], taskOverrides });
     } else {
       if (!customName.trim()) return;
       onAdd({ id, vegId: null, customName: customName.trim(), plotLabel, plantedDate, taskCompletions: {}, journal: [] });
@@ -788,7 +989,7 @@ function AddPlantModal({ prefillVeg, onClose, onAdd }) {
         {mode === "master" && (
           <label className="field">
             <span>野菜</span>
-            <select value={vegId} onChange={(e) => setVegId(e.target.value)}>
+            <select value={vegId} onChange={(e) => { setVegId(e.target.value); setIntervalOverrides({}); }}>
               {VEGGIES.map((v) => (
                 <option key={v.id} value={v.id}>{v.icon} {v.name}</option>
               ))}
@@ -811,6 +1012,114 @@ function AddPlantModal({ prefillVeg, onClose, onAdd }) {
         <label className="field">
           <span>{mode === "master" ? (vegOf(vegId)?.plantLabel || "開始") : "開始"}日</span>
           <input type="date" value={plantedDate} onChange={(e) => setPlantedDate(e.target.value)} />
+        </label>
+
+        {mode === "master" && recurringTemplates.length > 0 && (
+          <div className="field">
+            <button type="button" className="link-toggle" onClick={() => setShowIntervalEdit((s) => !s)}>
+              {showIntervalEdit ? "▲ お世話タスクの間隔を閉じる" : "▼ お世話タスクの間隔を調整する"}
+            </button>
+            {showIntervalEdit && (
+              <div className="interval-edit">
+                {recurringTemplates.map((tpl) => (
+                  <div key={tpl.name} className="interval-row">
+                    <span className="interval-name">{tpl.name}</span>
+                    <input
+                      type="number"
+                      min="1"
+                      className="interval-input"
+                      value={intervalFor(tpl)}
+                      onChange={(e) =>
+                        setIntervalOverrides((prev) => ({ ...prev, [tpl.name]: e.target.value }))
+                      }
+                    />
+                    <span className="interval-unit">日ごと</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose}>キャンセル</button>
+          <button className="btn-primary" onClick={submit}>追加する</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- カレンダー予定追加モーダル（農薬散布・株分けなど自由な予定） ---------- */
+function AddScheduleModal({ plants, initialPlantId, initialDate, onClose, onSave }) {
+  const [plantId, setPlantId] = useState(initialPlantId || "");
+  const [name, setName] = useState("");
+  const [date, setDate] = useState(initialDate || toISO(new Date()));
+  const [repeatOn, setRepeatOn] = useState(false);
+  const [repeatDays, setRepeatDays] = useState(14);
+  const [repeatCount, setRepeatCount] = useState(4);
+  const [note, setNote] = useState("");
+
+  const submit = () => {
+    if (!name.trim()) return;
+    onSave({
+      id: `ct_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      plantId: plantId || null,
+      name: name.trim(),
+      date,
+      note: note.trim(),
+      repeatDays: repeatOn ? Number(repeatDays) : undefined,
+      repeatCount: repeatOn ? Number(repeatCount) : undefined,
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>予定を追加</h3>
+
+        <label className="field">
+          <span>対象</span>
+          <select value={plantId || ""} onChange={(e) => setPlantId(e.target.value)}>
+            <option value="">畑全体（特定の野菜なし）</option>
+            {plants.map((p) => {
+              const v = vegOf(p.vegId);
+              return (
+                <option key={p.id} value={p.id}>
+                  {v ? v.icon : "🌿"} {p.customName || (v ? v.name : "名称未設定")}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>内容</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：農薬散布、アスパラの株分け" />
+        </label>
+
+        <label className="field">
+          <span>日付</span>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </label>
+
+        <label className="field checkbox-field">
+          <input type="checkbox" checked={repeatOn} onChange={(e) => setRepeatOn(e.target.checked)} />
+          <span>繰り返す</span>
+        </label>
+
+        {repeatOn && (
+          <div className="interval-row" style={{ marginBottom: 12 }}>
+            <input type="number" min="1" className="interval-input" value={repeatDays} onChange={(e) => setRepeatDays(e.target.value)} />
+            <span className="interval-unit">日ごと ×</span>
+            <input type="number" min="1" className="interval-input" value={repeatCount} onChange={(e) => setRepeatCount(e.target.value)} />
+            <span className="interval-unit">回</span>
+          </div>
+        )}
+
+        <label className="field">
+          <span>メモ（任意）</span>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="例：うどんこ病対策の薬剤散布" />
         </label>
 
         <div className="modal-actions">
@@ -1091,6 +1400,42 @@ h3 { font-family: "Shippori Mincho", serif; font-size: 16px; color: var(--green-
   background: var(--frost); color: #fff; font-size: 12px; padding: 8px 14px; border-radius: 20px;
   max-width: 90%; text-align: center;
 }
+
+.task-note { font-size: 11.5px; color: var(--ink-soft); margin-top: 4px; }
+.task-delete {
+  flex-shrink: 0; background: none; border: none; color: var(--ink-soft); font-size: 13px; cursor: pointer;
+  padding: 4px;
+}
+
+.link-toggle { background: none; border: none; color: var(--green); font-size: 12.5px; padding: 0; cursor: pointer; }
+.interval-edit { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.interval-row { display: flex; align-items: center; gap: 6px; }
+.interval-name { flex: 1; font-size: 13px; color: var(--ink); }
+.interval-input { width: 56px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); font-size: 13px; }
+.interval-unit { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+.checkbox-field { flex-direction: row !important; align-items: center; gap: 8px; }
+.checkbox-field input { width: 16px; height: 16px; }
+
+.cal-nav { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.cal-nav-btn {
+  width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-card);
+  color: var(--green-deep); font-size: 16px; cursor: pointer;
+}
+.cal-nav-label { font-family: "Shippori Mincho", serif; font-size: 16px; color: var(--green-deep); min-width: 110px; text-align: center; }
+
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-weekday { text-align: center; font-size: 11px; color: var(--ink-soft); padding-bottom: 4px; }
+.cal-cell {
+  aspect-ratio: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-card);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font-size: 12.5px; color: var(--ink); cursor: pointer; padding: 0;
+}
+.cal-cell-empty { border: none; background: none; cursor: default; }
+.cal-cell-today { border-color: var(--gold); font-weight: 700; }
+.cal-cell-selected { background: var(--green); color: #fff; }
+.cal-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--frost); }
+.cal-dot-done { background: var(--ink-soft); opacity: 0.5; }
+.cal-day-panel { margin-top: 4px; }
 `;
 
 </script>
