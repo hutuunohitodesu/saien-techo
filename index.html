@@ -93,6 +93,10 @@ const VEGGIES = [
     plantLabel: "植え付け", winStart: "05-15", winEnd: "06-15",
     harvestMin: 150, harvestMax: 180,
     memo: "土寄せを重ねると白い部分が長く育つ。" },
+  { id: "hanegi", name: "葉ネギ", icon: "🍃", category: "leaf", frostTender: false,
+    plantLabel: "植え付け", winStart: "05-01", winEnd: "05-20",
+    harvestMin: 60, harvestMax: 80,
+    memo: "土寄せは不要。株元を1〜2cm残して刈り取れば、また伸びてきて繰り返し収穫できる。" },
   { id: "daikon", name: "ダイコン（秋どり）", icon: "🥕", category: "root", frostTender: false,
     plantLabel: "種まき", winStart: "08-01", winEnd: "08-20",
     harvestMin: 60, harvestMax: 80,
@@ -507,6 +511,7 @@ function App() {
 
         {tab === "plan" && (
           <PlanView
+            plants={plants}
             onPick={(veg) => { setPrefillVeg(veg); setShowAddPlant(true); }}
           />
         )}
@@ -772,7 +777,27 @@ function PlantDetailView({ plant, veg, tasks, isDone, onToggle, onDeleteCustom, 
 }
 
 /* ---------- 作付け計画 ---------- */
-function PlanView({ onPick }) {
+function PlanView({ plants, onPick }) {
+  const currentYear = new Date().getFullYear();
+
+  /* 野菜ごとに、過去（今年より前）の栽培記録をまとめる */
+  const pastRecordsByVeg = useMemo(() => {
+    const map = {};
+    (plants || []).forEach((p) => {
+      if (!p.vegId || !p.journal) return;
+      p.journal.forEach((j) => {
+        const y = parseISO(j.date).getFullYear();
+        if (y >= currentYear) return; // 今年の記録は「過去」に含めない
+        if (!map[p.vegId]) map[p.vegId] = [];
+        map[p.vegId].push({ ...j, year: y, plotLabel: p.plotLabel });
+      });
+    });
+    Object.keys(map).forEach((k) => {
+      map[k].sort((a, b) => (a.date < b.date ? 1 : -1));
+    });
+    return map;
+  }, [plants, currentYear]);
+
   return (
     <div className="view">
       <div className="view-header">
@@ -786,20 +811,37 @@ function PlanView({ onPick }) {
         return (
           <div key={cat} className="plan-cat">
             <h3 className="plan-cat-title">{label}</h3>
-            {list.map((v) => (
-              <div key={v.id} className="plan-row" onClick={() => onPick(v)}>
-                <div className="plan-row-top">
-                  <span className="seed-icon">{v.icon}</span>
-                  <span className="plan-veg-name">{v.name}</span>
-                  {v.frostTender && <span className="frost-badge" title="遅霜に弱い">❄️ 霜注意</span>}
+            {list.map((v) => {
+              const pastRecords = (pastRecordsByVeg[v.id] || []).slice(0, 3);
+              return (
+                <div key={v.id} className="plan-row">
+                  <div className="plan-row-clickable" onClick={() => onPick(v)}>
+                    <div className="plan-row-top">
+                      <span className="seed-icon">{v.icon}</span>
+                      <span className="plan-veg-name">{v.name}</span>
+                      {v.frostTender && <span className="frost-badge" title="遅霜に弱い">❄️ 霜注意</span>}
+                    </div>
+                    <MonthBar winStart={v.winStart} winEnd={v.winEnd} />
+                    <div className="plan-row-meta">
+                      {v.plantLabel}: {mmddToMonthDay(v.winStart).m}月{mmddToMonthDay(v.winStart).d}日〜{mmddToMonthDay(v.winEnd).m}月{mmddToMonthDay(v.winEnd).d}日ごろ
+                      ・収穫まで約{v.harvestMin}〜{v.harvestMax}日
+                    </div>
+                  </div>
+                  {pastRecords.length > 0 && (
+                    <div className="plan-past-records">
+                      <div className="plan-past-title">📔 過去の記録</div>
+                      {pastRecords.map((r) => (
+                        <div key={r.id} className="plan-past-item">
+                          <span className="plan-past-mood">{(MOODS.find((m) => m.id === r.mood) || {}).icon}</span>
+                          <span className="plan-past-date">{r.year}年{fmtMD(parseISO(r.date))}</span>
+                          <span className="plan-past-text">{r.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <MonthBar winStart={v.winStart} winEnd={v.winEnd} />
-                <div className="plan-row-meta">
-                  {v.plantLabel}: {mmddToMonthDay(v.winStart).m}月{mmddToMonthDay(v.winStart).d}日〜{mmddToMonthDay(v.winEnd).m}月{mmddToMonthDay(v.winEnd).d}日ごろ
-                  ・収穫まで約{v.harvestMin}〜{v.harvestMax}日
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         );
       })}
@@ -1335,7 +1377,17 @@ h3 { font-family: "Shippori Mincho", serif; font-size: 16px; color: var(--green-
   font-family: "Shippori Mincho", serif; font-size: 14px; color: var(--green-deep);
   margin: 4px 0 2px; border-bottom: 1px solid var(--line); padding-bottom: 4px;
 }
-.plan-row { background: var(--bg-card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.plan-row { background: var(--bg-card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.plan-row-clickable { cursor: pointer; }
+.plan-past-records {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.plan-past-title { font-size: 11px; color: var(--brown); font-weight: 600; }
+.plan-past-item { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.5; }
+.plan-past-mood { font-size: 13px; }
+.plan-past-date { color: var(--ink-soft); white-space: nowrap; font-size: 11px; }
+.plan-past-text { color: var(--ink); }
 .plan-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .plan-veg-name { font-size: 14.5px; font-weight: 700; color: var(--green-deep); }
 .frost-badge { margin-left: auto; font-size: 10.5px; background: #FBEEE9; color: var(--frost); padding: 2px 6px; border-radius: 6px; }
