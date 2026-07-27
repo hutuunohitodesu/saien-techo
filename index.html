@@ -30,16 +30,19 @@ const VEGGIES = [
     taskConfig: { "追肥": { repeatDays: 21 } },
     memo: "遅霜が過ぎてから植え付け。梅雨の長雨で実が割れやすいので雨よけがあると安心。" },
   { id: "minitomato", name: "ミニトマト", icon: "🍅", category: "fruit_large", frostTender: true,
+    spacing: "うね幅50cm・株間50cm",
     plantLabel: "植え付け", winStart: "05-05", winEnd: "05-20",
     harvestMin: 55, harvestMax: 75,
     taskConfig: { "追肥": { repeatDays: 21 } },
     memo: "大玉より育てやすく実つきも多い。裂果しにくいが、水やりの量が急に変わると割れやすいので注意。" },
   { id: "nasu", name: "ナス", icon: "🍆", category: "fruit_large", frostTender: true,
+    spacing: "うね幅60〜70cm・株間50cm",
     plantLabel: "植え付け", winStart: "05-10", winEnd: "05-25",
     harvestMin: 55, harvestMax: 75,
     taskConfig: { "追肥": { repeatDays: 14 } },
     memo: "低温に弱いので地温が十分上がってから。マルチで地温確保すると生育が安定。" },
   { id: "okra", name: "オクラ", icon: "🌶️", category: "fruit_large", frostTender: true,
+    spacing: "うね幅60cm・株間40cm・条間40cm",
     plantLabel: "植え付け", winStart: "05-20", winEnd: "06-10",
     harvestMin: 55, harvestMax: 75,
     taskConfig: { "追肥": { repeatDays: 14 } },
@@ -49,6 +52,7 @@ const VEGGIES = [
     harvestMin: 60, harvestMax: 80,
     memo: "実がなり始めたら早採りすると株が疲れにくい。" },
   { id: "kyuri", name: "キュウリ", icon: "🥒", category: "fruit_vine", frostTender: true,
+    spacing: "うね幅60cm・株間50cm",
     plantLabel: "植え付け", winStart: "05-05", winEnd: "05-20",
     harvestMin: 40, harvestMax: 55,
     taskConfig: { "追肥": { repeatDays: 10 } },
@@ -82,6 +86,7 @@ const VEGGIES = [
     harvestMin: 30, harvestMax: 40,
     memo: "ジャガイモ収穫後の畝への後作を想定。酸性土壌が苦手なので、種まき前に苦土石灰をまいておく。" },
   { id: "cauliflower", name: "カリフラワー", icon: "🥦", category: "leaf", frostTender: false,
+    spacing: "うね幅70cm・株間50cm",
     plantLabel: "植え付け", winStart: "09-01", winEnd: "09-20",
     harvestMin: 70, harvestMax: 90,
     memo: "ジャガイモ収穫後の畝への後作、秋植えを想定。花蕾が見え始めたら周りの葉をかぶせて霜や直射日光による変色を防ぐ。" },
@@ -106,6 +111,7 @@ const VEGGIES = [
     harvestMin: 100, harvestMax: 130,
     memo: "発芽まで乾かさないことが最大のコツ。覆土は薄めに。" },
   { id: "jagaimo", name: "ジャガイモ", icon: "🥔", category: "root", frostTender: false,
+    spacing: "うね幅70cm・株間30cm",
     plantLabel: "種イモ植え付け", winStart: "04-10", winEnd: "04-25",
     harvestMin: 90, harvestMax: 100,
     memo: "遅霜で芽が傷むことがあるので、霜注意報が出たら土寄せや覆いで保護。" },
@@ -114,14 +120,17 @@ const VEGGIES = [
     harvestMin: 150, harvestMax: 180,
     memo: "乾燥に弱いので、畝間に敷きわらをして土の乾燥を防ぐと生育が安定。" },
   { id: "satsumaimo", name: "サツマイモ", icon: "🍠", category: "sweet_potato", frostTender: true,
+    spacing: "うね幅60cm・株間30cm",
     plantLabel: "苗（つる）植え付け", winStart: "05-20", winEnd: "06-10",
     harvestMin: 120, harvestMax: 140,
     memo: "肥料を与えすぎると葉ばかり茂る「つるぼけ」になるので元肥は控えめに。" },
   { id: "tamanegi", name: "タマネギ（秋植え）", icon: "🧅", category: "bulb", frostTender: false,
+    spacing: "うね幅100cm・株間20cm・条間15cm",
     plantLabel: "植え付け", winStart: "10-01", winEnd: "10-20",
     harvestMin: 250, harvestMax: 270,
     memo: "雪の下で越冬する作型。積雪前にしっかり根付かせておく。" },
   { id: "ninniku", name: "ニンニク", icon: "🧄", category: "bulb", frostTender: false,
+    spacing: "うね幅80cm・株間15cm・条間15cm",
     plantLabel: "植え付け", winStart: "09-20", winEnd: "10-15",
     harvestMin: 260, harvestMax: 290,
     memo: "タマネギと同じく雪の下で越冬。芽が伸びてきたら敷きわらで軽く保護すると安心。" },
@@ -329,6 +338,44 @@ async function saveData(data) {
     console.error("保存に失敗しました", e);
     throw e;
   }
+}
+
+/* ---------- 写真アップロード（Google Drive経由） ---------- */
+async function uploadPhoto(base64, mimeType, fileName) {
+  const res = await fetch(GAS_URL, {
+    method: "POST",
+    body: JSON.stringify({ key: SECRET, action: "uploadPhoto", imageBase64: base64, mimeType, fileName }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return json;
+}
+
+/* 画像ファイルを縮小・圧縮してbase64(プレフィックスなし)を返す */
+function compressImageFile(file, maxDim = 1000, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+          else { width = Math.round((width * maxDim) / height); height = maxDim; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        resolve(dataUrl.split(",")[1]);
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 /* ========================================================================= */
@@ -802,6 +849,7 @@ function PlantDetailView({ plant, veg, tasks, isDone, onToggle, onDeleteCustom, 
               <div>
                 <div className="journal-date">{fmtMDW(parseISO(j.date))}</div>
                 <div className="journal-text">{j.text}</div>
+                {j.photoUrl && <img src={j.photoUrl} alt="" className="journal-photo" onClick={() => window.open(j.photoUrl, "_blank")} />}
               </div>
             </li>
           ))}
@@ -863,6 +911,7 @@ function PlanView({ plants, onPick }) {
                       {v.plantLabel}: {mmddToMonthDay(v.winStart).m}月{mmddToMonthDay(v.winStart).d}日〜{mmddToMonthDay(v.winEnd).m}月{mmddToMonthDay(v.winEnd).d}日ごろ
                       ・収穫まで約{v.harvestMin}〜{v.harvestMax}日
                     </div>
+                    {v.spacing && <div className="plan-row-spacing">📏 {v.spacing}</div>}
                   </div>
                   {pastRecords.length > 0 && (
                     <div className="plan-past-records">
@@ -1113,6 +1162,7 @@ function JournalView({ plants, onSelectPlant }) {
                 <span className="journal-veg">{j.veg ? j.veg.icon : "🌿"} {j.plant.customName || (j.veg ? j.veg.name : "")}</span>
               </div>
               <div className="journal-text">{j.text}</div>
+              {j.photoUrl && <img src={j.photoUrl} alt="" className="journal-photo" onClick={(e) => { e.stopPropagation(); window.open(j.photoUrl, "_blank"); }} />}
             </div>
           </li>
         ))}
@@ -1314,10 +1364,39 @@ function JournalModal({ onClose, onSave }) {
   const [text, setText] = useState("");
   const [mood, setMood] = useState("normal");
   const [date, setDate] = useState(toISO(new Date()));
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
 
-  const submit = () => {
+  const onPickPhoto = (e) => {
+    const file = e.target.files && e.target.files[0];
+    setUploadError("");
+    if (!file) { setPhotoFile(null); setPhotoPreview(null); return; }
+    setPhotoFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setPhotoPreview(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const submit = async () => {
     if (!text.trim()) return;
-    onSave({ id: `j_${Date.now()}`, date, mood, text: text.trim() });
+    let photoUrl = null;
+    if (photoFile) {
+      setUploading(true);
+      setUploadError("");
+      try {
+        const base64 = await compressImageFile(photoFile);
+        const res = await uploadPhoto(base64, "image/jpeg", `journal_${Date.now()}`);
+        photoUrl = res && res.url ? res.url : null;
+      } catch (err) {
+        setUploading(false);
+        setUploadError(err.message || "写真のアップロードに失敗しました");
+        return;
+      }
+      setUploading(false);
+    }
+    onSave({ id: `j_${Date.now()}`, date, mood, text: text.trim(), photoUrl });
   };
 
   return (
@@ -1347,14 +1426,22 @@ function JournalModal({ onClose, onSave }) {
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} placeholder="例：花が咲き始めた。葉に少し虫食いあり。" />
         </label>
 
+        <label className="field">
+          <span>写真（任意）</span>
+          <input type="file" accept="image/*" onChange={onPickPhoto} />
+          {photoPreview && <img src={photoPreview} alt="プレビュー" className="photo-preview" />}
+          {uploadError && <span className="photo-error">⚠️ {uploadError}</span>}
+        </label>
+
         <div className="modal-actions">
-          <button className="btn-secondary" onClick={onClose}>キャンセル</button>
-          <button className="btn-primary" onClick={submit}>記録する</button>
+          <button className="btn-secondary" onClick={onClose} disabled={uploading}>キャンセル</button>
+          <button className="btn-primary" onClick={submit} disabled={uploading}>{uploading ? "アップロード中…" : "記録する"}</button>
         </div>
       </div>
     </div>
   );
 }
+
 
 /* ========================================================================= */
 const CSS = `
@@ -1504,6 +1591,9 @@ h3 { font-family: "Shippori Mincho", serif; font-size: 16px; color: var(--green-
 .journal-date { font-size: 11.5px; color: var(--ink-soft); margin-bottom: 2px; }
 .journal-veg { font-size: 11.5px; color: var(--brown); }
 .journal-text { font-size: 13.5px; line-height: 1.6; }
+.journal-photo { display: block; margin-top: 8px; max-width: 100%; max-height: 220px; border-radius: 8px; cursor: pointer; object-fit: cover; }
+.photo-preview { display: block; margin-top: 8px; max-width: 100%; max-height: 180px; border-radius: 8px; }
+.photo-error { display: block; margin-top: 6px; font-size: 12px; color: var(--frost); }
 
 .muted { color: var(--ink-soft); font-size: 13px; line-height: 1.6; }
 .plan-intro { margin: -6px 0 4px; }
@@ -1528,6 +1618,7 @@ h3 { font-family: "Shippori Mincho", serif; font-size: 16px; color: var(--green-
 .plan-veg-name { font-size: 14.5px; font-weight: 700; color: var(--green-deep); }
 .frost-badge { margin-left: auto; font-size: 10.5px; background: #FBEEE9; color: var(--frost); padding: 2px 6px; border-radius: 6px; }
 .plan-row-meta { font-size: 11.5px; color: var(--ink-soft); margin-top: 6px; }
+.plan-row-spacing { font-size: 11.5px; color: var(--brown); margin-top: 3px; }
 
 .month-bar { position: relative; }
 .month-bar-track { position: relative; height: 8px; background: #E3DCC4; border-radius: 4px; margin-top: 2px; }
